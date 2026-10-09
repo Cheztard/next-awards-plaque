@@ -239,25 +239,21 @@ const glass = (o) => new THREE.MeshPhysicalMaterial({
   roughness: 0.015, metalness: 0, ior: 1.5, transmission: 1, thickness: PLATE_T,
   specularIntensity: 1, envMapIntensity: 1, ...o,
 });
-const shellMats = {
-  clear:  glass({ color: 0xffffff, envMapIntensity: 0.5, attenuationColor: new THREE.Color(0xe3f4ef), attenuationDistance: 1.2 }),
-  yellow: glass({ color: 0xffffff, envMapIntensity: 0.5, attenuationColor: new THREE.Color(0xfac52e), attenuationDistance: PLATE_T }),
-  blue:   glass({ color: 0xffffff, envMapIntensity: 0.5, attenuationColor: new THREE.Color(0x0046d1), attenuationDistance: PLATE_T }),
-};
-// Colored acrylic core bonded inside the clear shell: seen through the glass it reads as depth with an inner edge.
-// Colored core is self-lit, calibrated so the front view matches the reference photo (yellow #e4a21b, blue #002eaa).
-const core = (r, g, b) => {
-  const m = new THREE.MeshPhysicalMaterial({ color: 0x000000, roughness: 0.3, metalness: 0, envMapIntensity: 0 });
-  m.emissive.setRGB(r, g, b);
+// Plates are clear acrylic; the color is a thin film on their inner face, bonded against the glass.
+const plateMat = glass({ color: 0xffffff, envMapIntensity: 0.5, attenuationColor: new THREE.Color(0xf2f7f7), attenuationDistance: 2 });
+// Film colors are set so the front view matches the reference photo (yellow #e4a21b, blue #002eaa).
+const film = (r, g, b) => {
+  const m = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide, toneMapped: false });
+  m.color.setRGB(r, g, b);
   return m;
 };
-const coreMats = { yellow: core(0.8423, 0.6593, 0.0371), blue: core(0, 0.2257, 0.6482) };
+const filmMats = { yellow: film(0.885, 0.398, 0), blue: film(0, 0.018, 0.412) };
 
-// Clear glass core, full outline. Faces stay clear; the polished sides carry the green tint of thick glass.
+// Clear glass core, full outline. Faces stay clear; the polished sides carry a faint blue-green tint.
 const glassFace = glass({ color: 0xffffff, thickness: GLASS_T, envMapIntensity: 0.5,
   attenuationColor: new THREE.Color(0xe6f5ef), attenuationDistance: 1.2 });
-const glassSide = glass({ color: 0xd2efe4, thickness: GLASS_T, envMapIntensity: 0.7,
-  attenuationColor: new THREE.Color(0x7cc7ad), attenuationDistance: 0.12 });
+const glassSide = glass({ color: 0xf1f7f6, thickness: GLASS_T, envMapIntensity: 0.7,
+  attenuationColor: new THREE.Color(0xc4dcd8), attenuationDistance: 0.35 });
 const outline = ccw([[222, 72], [1000, 72], [1000, 1212], [222, 1212]].map(([x, y]) => toV(x, y)));
 plaque.add(new THREE.Mesh(slab(outline, GLASS_T, 0.003), [glassFace, glassSide]));
 
@@ -265,12 +261,11 @@ plaque.add(new THREE.Mesh(slab(outline, GLASS_T, 0.003), [glassFace, glassSide])
 for (const side of [1, -1]) {
   for (const k of ['yellow', 'blue']) {
     const pts = ccw(REGIONS[k].map(([x, y]) => toV(x, y)));
-    const z = side * (GLASS_T / 2 + PLATE_T / 2);
-    const shell = new THREE.Mesh(slab(pts, PLATE_T, CHAMFER), shellMats[k]);
-    shell.position.z = z;
-    const coreMesh = new THREE.Mesh(slab(inset(pts, CHAMFER + 0.004), PLATE_T * 0.5, 0.002), coreMats[k]);
-    coreMesh.position.z = z;
-    plaque.add(shell, coreMesh);
+    const plate = new THREE.Mesh(slab(pts, PLATE_T, CHAMFER), plateMat);
+    plate.position.z = side * (GLASS_T / 2 + PLATE_T / 2);
+    const layer = new THREE.Mesh(new THREE.ShapeGeometry(new THREE.Shape(inset(pts, 0.0005))), filmMats[k]);
+    layer.position.z = side * (GLASS_T / 2 + 0.0009);
+    plaque.add(plate, layer);
   }
 }
 
