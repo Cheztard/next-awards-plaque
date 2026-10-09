@@ -207,7 +207,7 @@ const plaque = new THREE.Group();
 scene.add(plaque);
 
 // Chamfered glass shell per panel. bevelOffset pulls the chamfer inside the outline so panels meet edge to edge.
-const CHAMFER = 0.012; // wide angled edge on the colored plates
+const CHAMFER = 0.0015; // plates are square-cut; only a hairline polished arris catches the light
 function slab(pts, depth, ch) {
   const shape = new THREE.Shape(pts);
   const geo = new THREE.ExtrudeGeometry(shape, {
@@ -233,6 +233,39 @@ function inset(pts, d) {
     return p1.clone().addScaledVector(d1, t);
   });
 }
+// Re-sort an extrusion's side triangles: cut walls facing the clear notch glow (group 1); outer sides and the
+// yellow/blue seam stay plain clear acrylic (group 2).
+const NOTCH = [[[355, 72], [703, 484]], [[703, 484], [222, 1013]]].map((s) => s.map(([x, y]) => toV(x, y)));
+function segDist(px, py, a, b) {
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const u = Math.max(0, Math.min(1, ((px - a.x) * dx + (py - a.y) * dy) / (dx * dx + dy * dy)));
+  return Math.hypot(px - a.x - u * dx, py - a.y - u * dy);
+}
+function splitWalls(geo) {
+  const src = geo.attributes, n = src.position.count;
+  const side = geo.groups.find((g) => g.materialIndex === 1);
+  const buckets = [[], [], []];
+  const p = src.position.array;
+  for (let i = 0; i < n; i += 3) {
+    let b = 0;
+    if (i >= side.start && i < side.start + side.count) {
+      const cx = (p[i * 3] + p[i * 3 + 3] + p[i * 3 + 6]) / 3, cy = (p[i * 3 + 1] + p[i * 3 + 4] + p[i * 3 + 7]) / 3;
+      b = NOTCH.some(([a, c]) => segDist(cx, cy, a, c) < 0.004) ? 1 : 2;
+    }
+    buckets[b].push(i);
+  }
+  const out = new THREE.BufferGeometry();
+  for (const name of Object.keys(src)) {
+    const a = src[name], size = a.itemSize, arr = new Float32Array(n * size);
+    let k = 0;
+    for (const bucket of buckets) for (const i of bucket) for (let v = 0; v < 3; v++)
+      for (let c = 0; c < size; c++) arr[k++] = a.array[(i + v) * size + c];
+    out.setAttribute(name, new THREE.BufferAttribute(arr, size));
+  }
+  let start = 0;
+  buckets.forEach((bucket, mi) => { out.addGroup(start, bucket.length * 3, mi); start += bucket.length * 3; });
+  return out;
+}
 const ccw = (pts) => (THREE.ShapeUtils.isClockWise(pts) ? pts.slice().reverse() : pts);
 
 const glass = (o) => new THREE.MeshPhysicalMaterial({
@@ -240,12 +273,17 @@ const glass = (o) => new THREE.MeshPhysicalMaterial({
   specularIntensity: 1, envMapIntensity: 1, ...o,
 });
 // Plates are clear acrylic; the color is a thin film on their inner face, bonded against the glass.
-const plateMat = glass({ color: 0xffffff, envMapIntensity: 0.5, attenuationColor: new THREE.Color(0xf2f7f7), attenuationDistance: 2 });
+const plateMat = glass({ color: 0xffffff, roughness: 0.05, envMapIntensity: 0.3, attenuationColor: new THREE.Color(0xf2f7f7), attenuationDistance: 2 });
 // Film colors are set so the front view matches the reference photo (yellow #e4a21b, blue #002eaa).
 const film = (r, g, b) => {
   const m = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide, toneMapped: false });
   m.color.setRGB(r, g, b);
   return m;
+};
+// Cut walls glow with the film color seen through the acrylic edge, which is what makes the step read.
+const wallMats = {
+  yellow: glass({ color: 0xfff1d0, envMapIntensity: 0.6, attenuationColor: new THREE.Color(0xf0a01e), attenuationDistance: 0.05 }),
+  blue:   glass({ color: 0xdfe6ff, envMapIntensity: 0.6, attenuationColor: new THREE.Color(0x1638b0), attenuationDistance: 0.05 }),
 };
 const filmMats = { yellow: film(0.885, 0.398, 0), blue: film(0, 0.018, 0.412) };
 
@@ -261,9 +299,9 @@ plaque.add(new THREE.Mesh(slab(outline, GLASS_T, 0.003), [glassFace, glassSide])
 for (const side of [1, -1]) {
   for (const k of ['yellow', 'blue']) {
     const pts = ccw(REGIONS[k].map(([x, y]) => toV(x, y)));
-    const plate = new THREE.Mesh(slab(pts, PLATE_T, CHAMFER), plateMat);
+    const plate = new THREE.Mesh(splitWalls(slab(pts, PLATE_T, CHAMFER)), [plateMat, wallMats[k], plateMat]);
     plate.position.z = side * (GLASS_T / 2 + PLATE_T / 2);
-    const layer = new THREE.Mesh(new THREE.ShapeGeometry(new THREE.Shape(inset(pts, 0.0005))), filmMats[k]);
+    const layer = new THREE.Mesh(new THREE.ShapeGeometry(new THREE.Shape(pts)), filmMats[k]);
     layer.position.z = side * (GLASS_T / 2 + 0.0009);
     plaque.add(plate, layer);
   }
@@ -405,7 +443,7 @@ function fit() {
   const cap = document.querySelector('.caption').getBoundingClientRect();
   const dock = document.querySelector('.dock').getBoundingClientRect();
   const hint = document.querySelector('.hint').getBoundingClientRect();
-  const top = w < 900 ? cap.bottom + 16 : 24;
+  const top = w < 1200 ? cap.bottom + 16 : 24;
   const bottom = (w <= 640 ? hint.top : dock.top) - 16;
   const band = Math.max(bottom - top, h * 0.35);
   camera.setViewOffset(w, h, 0, h / 2 - (top + bottom) / 2, w, h);
