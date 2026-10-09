@@ -301,14 +301,13 @@ img.onload = () => {
       O[o] = r[0]; O[o + 1] = r[1]; O[o + 2] = r[2]; O[o + 3] = Math.round(r[3] * 255);
     }
   }
-  // NEXT logo on the clear panel: lift ink off white, masked to stay left of both diagonals.
+  // NEXT logo on the clear panel, masked to stay left of both diagonals.
   key([270, 380, 640, 760], (r, g, b, x, y) => {
     if (x > 362 + 0.845 * (y - 80) - 7) return null;
     if (x > 398 - 0.909 * (y - 820) - 7) return null;
-    const a = clamp((Math.max(255 - r, 255 - g, 255 - b) / 255 - 0.08) / 0.55);
-    if (a <= 0) return null;
-    const un = (c) => Math.max(0, Math.min(255, (c - 255 * (1 - a)) / a));
-    return [un(r), un(g), un(b), a];
+    // Anything clearly off-white is solid ink in its true photo color; only near-white goes clear.
+    const a = clamp((Math.max(255 - r, 255 - g, 255 - b) - 14) / 20);
+    return a > 0 ? [r, g, b, a] : null;
   });
   // Black mark on the yellow panel.
   key([820, 115, 955, 250], (r) => [18, 18, 20, clamp((190 - r) / 140)]);
