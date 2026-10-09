@@ -130,7 +130,8 @@ const PHOTO = "data:image/webp;base64,UklGRnakAwBXRUJQVlA4WAoAAAAwAAAAdgQAXwUASU
 // Plaque front face as measured on the source photo (px). 1 unit = 1000 px.
 const FACE = { x0: 222, y0: 72, x1: 1000, y1: 1212 };
 const FW = FACE.x1 - FACE.x0, FH = FACE.y1 - FACE.y0;
-const DEPTH = 0.06;
+// Sandwich build, from the reference photos: colored plate | clear glass core | colored plate, about 1 : 2 : 1.
+const GLASS_T = 0.078, PLATE_T = 0.039, DEPTH = GLASS_T + 2 * PLATE_T;
 const toV = (px, py) => new THREE.Vector2((px - FACE.x0 - FW / 2) / 1000, (FACE.y1 - py) / 1000);
 
 // Colored acrylic panels: the yellow wedge and blue base share one diagonal through the apex.
@@ -206,7 +207,7 @@ const plaque = new THREE.Group();
 scene.add(plaque);
 
 // Chamfered glass shell per panel. bevelOffset pulls the chamfer inside the outline so panels meet edge to edge.
-const CHAMFER = 0.014;
+const CHAMFER = 0.012; // wide angled edge on the colored plates
 function slab(pts, depth, ch) {
   const shape = new THREE.Shape(pts);
   const geo = new THREE.ExtrudeGeometry(shape, {
@@ -235,13 +236,13 @@ function inset(pts, d) {
 const ccw = (pts) => (THREE.ShapeUtils.isClockWise(pts) ? pts.slice().reverse() : pts);
 
 const glass = (o) => new THREE.MeshPhysicalMaterial({
-  roughness: 0.015, metalness: 0, ior: 1.5, transmission: 1, thickness: DEPTH,
+  roughness: 0.015, metalness: 0, ior: 1.5, transmission: 1, thickness: PLATE_T,
   specularIntensity: 1, envMapIntensity: 1, ...o,
 });
 const shellMats = {
   clear:  glass({ color: 0xffffff, envMapIntensity: 0.5, attenuationColor: new THREE.Color(0xe3f4ef), attenuationDistance: 1.2 }),
-  yellow: glass({ color: 0xffffff, envMapIntensity: 0.5, attenuationColor: new THREE.Color(0xfac52e), attenuationDistance: DEPTH }),
-  blue:   glass({ color: 0xffffff, envMapIntensity: 0.5, attenuationColor: new THREE.Color(0x0046d1), attenuationDistance: DEPTH }),
+  yellow: glass({ color: 0xffffff, envMapIntensity: 0.5, attenuationColor: new THREE.Color(0xfac52e), attenuationDistance: PLATE_T }),
+  blue:   glass({ color: 0xffffff, envMapIntensity: 0.5, attenuationColor: new THREE.Color(0x0046d1), attenuationDistance: PLATE_T }),
 };
 // Colored acrylic core bonded inside the clear shell: seen through the glass it reads as depth with an inner edge.
 // Colored core is self-lit, calibrated so the front view matches the reference photo (yellow #e4a21b, blue #002eaa).
@@ -252,13 +253,24 @@ const core = (r, g, b) => {
 };
 const coreMats = { yellow: core(0.8423, 0.6593, 0.0371), blue: core(0, 0.2257, 0.6482) };
 
-for (const k of Object.keys(REGIONS)) {
-  const pts = ccw(REGIONS[k].map(([x, y]) => toV(x, y)));
-  plaque.add(new THREE.Mesh(slab(pts, DEPTH, CHAMFER), shellMats[k]));
-  if (coreMats[k]) {
-    const m = new THREE.Mesh(slab(inset(pts, CHAMFER + 0.006), DEPTH * 0.5, 0.002), coreMats[k]);
-    m.position.z = -DEPTH * 0.06;
-    plaque.add(m);
+// Clear glass core, full outline. Faces stay clear; the polished sides carry the green tint of thick glass.
+const glassFace = glass({ color: 0xffffff, thickness: GLASS_T, envMapIntensity: 0.5,
+  attenuationColor: new THREE.Color(0xe6f5ef), attenuationDistance: 1.2 });
+const glassSide = glass({ color: 0xd2efe4, thickness: GLASS_T, envMapIntensity: 0.7,
+  attenuationColor: new THREE.Color(0x7cc7ad), attenuationDistance: 0.12 });
+const outline = ccw([[222, 72], [1000, 72], [1000, 1212], [222, 1212]].map(([x, y]) => toV(x, y)));
+plaque.add(new THREE.Mesh(slab(outline, GLASS_T, 0.003), [glassFace, glassSide]));
+
+// Yellow and blue plates bonded to the front and back. The clear panel has none, so the glass sits one plate deep.
+for (const side of [1, -1]) {
+  for (const k of ['yellow', 'blue']) {
+    const pts = ccw(REGIONS[k].map(([x, y]) => toV(x, y)));
+    const z = side * (GLASS_T / 2 + PLATE_T / 2);
+    const shell = new THREE.Mesh(slab(pts, PLATE_T, CHAMFER), shellMats[k]);
+    shell.position.z = z;
+    const coreMesh = new THREE.Mesh(slab(inset(pts, CHAMFER + 0.004), PLATE_T * 0.5, 0.002), coreMats[k]);
+    coreMesh.position.z = z;
+    plaque.add(shell, coreMesh);
   }
 }
 
@@ -308,10 +320,11 @@ img.onload = () => {
   };
   const clamp = (v) => Math.max(0, Math.min(1, v));
   const SC = 3; // texture px per model px
-  const out = new ImageData(FW * SC, FH * SC);
-  const O = out.data;
+  // Logo is printed on the recessed glass face; the mark and award text sit on the front plate.
+  const outs = { glass: new ImageData(FW * SC, FH * SC), plate: new ImageData(FW * SC, FH * SC) };
   for (const el of PRINT) {
     const [bx0, by0, bx1, by1] = el.box;
+    const O = outs[el.name === 'logo' ? 'glass' : 'plate'].data;
     for (let ty = by0 * SC; ty < by1 * SC; ty++) for (let tx = bx0 * SC; tx < bx1 * SC; tx++) {
       const x = (tx + 0.5) / SC, y = (ty + 0.5) / SC;
       const [u, v] = el.map(x, y);
@@ -332,20 +345,27 @@ img.onload = () => {
       O[o] = px[0]; O[o + 1] = px[1]; O[o + 2] = px[2]; O[o + 3] = Math.round(px[3] * 255);
     }
   }
-  const big = document.createElement('canvas');
-  big.width = FW * SC; big.height = FH * SC;
-  big.getContext('2d').putImageData(out, 0, 0);
-
-  const tex = new THREE.CanvasTexture(big);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
-  // Opaque cutout so the transmission pass sees it: from behind it shows mirrored through the acrylic.
-  const printMat = new THREE.MeshBasicMaterial({
-    map: tex, alphaTest: 0.45, alphaToCoverage: true, side: THREE.DoubleSide, toneMapped: false,
-  });
-  const print = new THREE.Mesh(new THREE.PlaneGeometry(FW / 1000, FH / 1000), printMat);
-  print.position.set(0, FH / 2000, DEPTH / 2 + 0.0006);
-  plaque.add(print);
+  const layer = (data, z, seeThrough) => {
+    const c = document.createElement('canvas');
+    c.width = FW * SC; c.height = FH * SC;
+    c.getContext('2d').putImageData(data, 0, 0);
+    const tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+    const geo = new THREE.PlaneGeometry(FW / 1000, FH / 1000);
+    // Front: alpha-blended, so the glass behind it does not refract a ghost copy of the print.
+    const front = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ map: tex, transparent: true, side: THREE.FrontSide, toneMapped: false }));
+    front.position.set(0, FH / 2000, z);
+    plaque.add(front);
+    if (seeThrough) {
+      // Back: opaque cutout, which the transmission pass picks up, so the print reads mirrored through the glass.
+      const back = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ map: tex, alphaTest: 0.45, alphaToCoverage: true, side: THREE.BackSide, toneMapped: false }));
+      back.position.copy(front.position);
+      plaque.add(back);
+    }
+  };
+  layer(outs.glass, GLASS_T / 2 + 0.0006, true);
+  layer(outs.plate, GLASS_T / 2 + PLATE_T + 0.0006, false);
 };
 img.src = PHOTO;
 
@@ -404,6 +424,8 @@ function fit() {
   camera.updateProjectionMatrix();
 }
 window.addEventListener('resize', fit);
+new ResizeObserver(fit).observe(stage);
+document.fonts?.ready.then(fit); // caption height changes once the webfont lands
 fit();
 
 const mq = window.matchMedia('(prefers-color-scheme: dark)');
