@@ -52,7 +52,7 @@ body {
   left: 24px; right: 24px;
   display: grid; gap: 6px;
   pointer-events: none;
-  max-width: 34ch;
+  max-width: 30ch;
 }
 .eyebrow {
   font-family: var(--font-mono); font-size: 0.72rem; letter-spacing: 0.12em;
@@ -233,8 +233,8 @@ function inset(pts, d) {
     return p1.clone().addScaledVector(d1, t);
   });
 }
-// Re-sort an extrusion's side triangles: cut walls facing the clear notch glow (group 1); outer sides and the
-// yellow/blue seam stay plain clear acrylic (group 2).
+// Re-sort an extrusion's side triangles: the cut wall along the yellow (group 1) and along the blue (group 2)
+// face the clear notch and glow; outer sides stay plain clear acrylic (group 3).
 const NOTCH = [[[355, 72], [703, 484]], [[703, 484], [222, 1013]]].map((s) => s.map(([x, y]) => toV(x, y)));
 function segDist(px, py, a, b) {
   const dx = b.x - a.x, dy = b.y - a.y;
@@ -244,13 +244,14 @@ function segDist(px, py, a, b) {
 function splitWalls(geo) {
   const src = geo.attributes, n = src.position.count;
   const side = geo.groups.find((g) => g.materialIndex === 1);
-  const buckets = [[], [], []];
+  const buckets = [[], [], [], []];
   const p = src.position.array;
   for (let i = 0; i < n; i += 3) {
     let b = 0;
     if (i >= side.start && i < side.start + side.count) {
       const cx = (p[i * 3] + p[i * 3 + 3] + p[i * 3 + 6]) / 3, cy = (p[i * 3 + 1] + p[i * 3 + 4] + p[i * 3 + 7]) / 3;
-      b = NOTCH.some(([a, c]) => segDist(cx, cy, a, c) < 0.004) ? 1 : 2;
+      const w = NOTCH.findIndex(([a, c]) => segDist(cx, cy, a, c) < 0.004);
+      b = w >= 0 ? w + 1 : 3;
     }
     buckets[b].push(i);
   }
@@ -296,14 +297,22 @@ const outline = ccw([[222, 72], [1000, 72], [1000, 1212], [222, 1212]].map(([x, 
 plaque.add(new THREE.Mesh(slab(outline, GLASS_T, 0.003), [glassFace, glassSide]));
 
 // Yellow and blue plates bonded to the front and back. The clear panel has none, so the glass sits one plate deep.
+// Each plate is one piece of clear acrylic (no seam between yellow and blue), notched around the clear panel.
+const PLATE = ccw([[355, 72], [1000, 72], [1000, 1212], [222, 1212], [222, 1013], [703, 484]].map(([x, y]) => toV(x, y)));
+// The blue film tucks a few px under the yellow along their shared edge, so no hairline can open between them.
+const FILMS = {
+  yellow: REGIONS.yellow,
+  blue: [[703, 484], [1000, 832], [1000, 1212], [222, 1212], [222, 1013]],
+};
 for (const side of [1, -1]) {
+  const plate = new THREE.Mesh(splitWalls(slab(PLATE, PLATE_T, CHAMFER)), [plateMat, wallMats.yellow, wallMats.blue, plateMat]);
+  plate.position.z = side * (GLASS_T / 2 + PLATE_T / 2);
+  plaque.add(plate);
   for (const k of ['yellow', 'blue']) {
-    const pts = ccw(REGIONS[k].map(([x, y]) => toV(x, y)));
-    const plate = new THREE.Mesh(splitWalls(slab(pts, PLATE_T, CHAMFER)), [plateMat, wallMats[k], plateMat]);
-    plate.position.z = side * (GLASS_T / 2 + PLATE_T / 2);
+    const pts = ccw(FILMS[k].map(([x, y]) => toV(x, y)));
     const layer = new THREE.Mesh(new THREE.ShapeGeometry(new THREE.Shape(pts)), filmMats[k]);
-    layer.position.z = side * (GLASS_T / 2 + 0.0009);
-    plaque.add(plate, layer);
+    layer.position.z = side * (GLASS_T / 2 + (k === 'yellow' ? 0.0011 : 0.0006));
+    plaque.add(layer);
   }
 }
 
@@ -443,15 +452,21 @@ function fit() {
   const cap = document.querySelector('.caption').getBoundingClientRect();
   const dock = document.querySelector('.dock').getBoundingClientRect();
   const hint = document.querySelector('.hint').getBoundingClientRect();
-  const top = w < 1200 ? cap.bottom + 16 : 24;
   const bottom = (w <= 640 ? hint.top : dock.top) - 16;
-  const band = Math.max(bottom - top, h * 0.35);
-  camera.setViewOffset(w, h, 0, h / 2 - (top + bottom) / 2, w, h);
   const vfov = THREE.MathUtils.degToRad(camera.fov);
-  const needH = 1.14 * 1.12 * (h / band), needW = 0.95 * 1.25;
-  const dH = needH / 2 / Math.tan(vfov / 2);
-  const dW = needW / 2 / (Math.tan(vfov / 2) * camera.aspect);
-  const d = Math.max(dH, dW);
+  const tan = Math.tan(vfov / 2);
+  const solve = (top) => {
+    const band = Math.max(bottom - top, h * 0.35);
+    const dH = (1.14 * 1.12 * (h / band)) / 2 / tan;
+    const dW = (0.95 * 1.25) / 2 / (tan * camera.aspect);
+    return { top, d: Math.max(dH, dW) };
+  };
+  // Use the full height unless the plaque (allowing for its turned width) would run under the caption.
+  let f = solve(24);
+  const halfPx = (0.41 / (2 * f.d * tan)) * h;
+  if (cap.right + 16 > w / 2 - halfPx && cap.bottom + 16 > 24) f = solve(cap.bottom + 16);
+  const d = f.d;
+  camera.setViewOffset(w, h, 0, h / 2 - (f.top + bottom) / 2, w, h);
   camera.position.set(0, TARGET.y + 0.12, d);
   controls.maxDistance = Math.max(5, d * 1.6);
   camera.updateProjectionMatrix();
